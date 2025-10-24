@@ -175,6 +175,39 @@ class BaseModel(metaclass=ModelMeta):
             objects.append(obj)
         return objects
 
+
+    @classmethod
+    def update(cls, where: dict = None, **kwargs):
+        """
+        UPDATE {table_name}
+        SET k = v {from kwargs}
+        WHERE {conditions from where dict}
+        """
+
+        if not kwargs:
+            raise ValueError("No fields to update")
+
+        set_clause = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        set_values = list(kwargs.values())
+
+        where_clause = ""
+        where_values = []
+        if where:
+            where_clause = " AND ".join([f"{k} = ?" for k in where.keys()])
+            where_values = list(where.values())
+
+        sql = f"UPDATE {cls.TableName()} SET {set_clause}"
+        if where_clause:
+            sql += f" WHERE {where_clause}"
+
+
+        conn = cls.connection()
+        cur = conn.cursor()
+        cur.execute(sql,set_values + where_values)
+        conn.commit()
+
+
+
     @classmethod
     def filter(cls, *args, **kwargs):
         joins = []
@@ -182,7 +215,6 @@ class BaseModel(metaclass=ModelMeta):
 
         if args and isinstance(args[0], Condition):
             where_clause = str(args[0])
-
             for model in BaseModel.__subclasses__():
                 if model.TableName() in where_clause and model != cls:
                     joins.append(model)
@@ -202,12 +234,21 @@ class BaseModel(metaclass=ModelMeta):
 
             if fk_field:
                 sql += f" JOIN {j.TableName()} ON {cls.TableName()}.{fk_field} = {j.TableName()}.id"
-                print(sql)
-
+                
         sql += f" WHERE {where_clause}"
 
-        print("Generated SQL:", sql)
+        conn = cls.connection()
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
 
+        field_name = list(cls.fields().keys())
+        objects = []
+        for row in rows:
+            data = {name: value for name, value in zip(field_name, row)}
+            obj = cls(**data)
+            objects.append(obj)
+        return objects
 
         
     @classmethod
@@ -242,11 +283,17 @@ class BaseModel(metaclass=ModelMeta):
         values = [getattr(self,n, None) for n in names]
         placeholders = ", ".join("?" for _ in names)
         sql = f"INSERT INTO {self.__class__.TableName()} ({', '.join(names)}) VALUES ({placeholders})"
-      
+
+
         conn = self.__class__.connection()
         cur = conn.cursor()
         cur.execute(sql, values)
         conn.commit()
+
+
+    @classmethod
+    def query(self):
+        return QueryChainer(self)
 
     @classmethod
     def create_table(cls):
@@ -265,11 +312,135 @@ class BaseModel(metaclass=ModelMeta):
                 columns.append(f'{str(name)} {str(typ)}')
             elif isinstance(typ, FOREIGNKEY):
                 cls._foreign_keys[typ.target_model] = name
+                columns.append(f'{str(name)} {str(typ)}')
             else:
                 columns.append(f'{str(name)} {type_map[typ]}')
         
         sql = f"CREATE TABLE IF NOT EXISTS {cls.TableName()} ({(','.join(columns))})"        
-        # conn = cls.connection()
-        # cur = conn.cursor()
-        # cur.execute(sql)
-        # conn.commit()
+    
+        conn = cls.connection()
+        cur = conn.cursor()
+        cur.execute(sql)
+        conn.commit()
+
+
+
+# YET TO implement to complex set of queries in here 
+class QueryChainer:
+    def __init__(self, model: BaseModel):
+        self.model = model
+        self._conditions = [] 
+        self._kwargs = {}
+        self._selected_fields = []
+        self._order_by = []
+        self._limit = None
+        self._count = False
+
+
+    def order_by(self, *fields):
+        self._order_by = fields
+        return self
+
+
+    def count(self):
+        self._count = True
+        return self
+
+    def limit(self, n):
+        self._limit = n
+        return self
+
+    def select(self, *fields):
+        """
+        Accept Field objects like User.id, User.name
+        """
+        self._selected_fields = fields
+        return self
+
+    def filter(self,*args, **kwargs):
+        
+        for cond in args:
+            if isinstance(cond, Condition):
+                self._conditions.append(cond)
+        
+
+        for k, v in self._kwargs:
+            self._kwargs[k] = v
+
+        return self
+
+    def _build_where_and_joins(self):
+        joins = []
+        clauses = []
+
+        if self._conditions:
+            if len(self._conditions) == 1:
+                combined = self._conditions[0]
+            else:
+                combined = self._conditions[0]
+                for cond in self._conditions[1:]:
+                    combined = cond & combined
+
+            where_clause = str(combined)
+
+
+            for model in BaseModel.__subclasses__():
+                if model.TableName() in where_clause and model != self.model:
+                    joins.append(model)
+
+            clauses.append(where_clause)
+
+         # Process kwargs as normal
+        for k, v in self._kwargs.items():
+            val = f"'{v}'" if isinstance(v, str) else v
+            clauses.append(f"{self.model.TableName()}.{k} = {val}")
+
+        final_where = " AND ".join(clauses) if clauses else ""
+        return final_where, joins
+
+
+    def all(self):
+        if self._count:
+            field_list = "COUNT(*)"
+        elif self._selected_fields:
+            field_name = []
+            for f in self._selected_fields:
+                if f.model is not self.model:
+                    raise ValueError("Invalid model in select class")
+
+                field_name.append(f.full_name())
+            
+            field_list = ', '.join(field_name)
+        else:
+            field_list = f"{self.model.TableName()}.*"
+        
+        where_clause, joins = self._build_where_and_joins()
+        sql = f"SELECT {field_list} FROM {self.model.TableName()}"
+
+        for j in joins:
+            fk_field = self.model._foreign_keys[j]
+            sql += f" JOIN {j.TableName()} ON {self.model.TableName()}.{fk_field} = {j.TableName()}.id"
+
+        if where_clause:
+            sql += f" WHERE {where_clause}"
+
+        if self._order_by:
+            order_clause = ", ".join([f.full_name() for f in self._order_by])
+            sql += f" ORDER BY {order_clause}"       
+
+        if self._limit is not None:
+            sql += f" LIMIT {self._limit}"
+
+
+        print(sql)
+        conn = self.model.connection()
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+        field_names = [f.name for f in self._selected_fields] if self._selected_fields else list(self.model.fields().keys())
+        return [self.model(**dict(zip(field_names, row))) for row in rows]
+    
+    def first(self):
+        results = self.all()
+        return results[0] if results else None
