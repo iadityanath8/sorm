@@ -59,11 +59,12 @@ cd sorm
 
 ## Roadmap
 
-- [ ] Complete ORM engine  
-- [ ] Implement save and fetch methods  
+- [x] Complete ORM engine  
+- [x] Implement save and fetch methods  
 - [ ] Add support for migrations  
 - [ ] Build the CLI tool for model generation and DB management  
 - [ ] Add advanced constraints and relations  
+
 
 ---
 
