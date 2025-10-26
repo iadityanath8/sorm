@@ -61,9 +61,9 @@ class CHECK:
 
 
 class Condition:
-    def __init__(self, expr):
+    def __init__(self, expr,name):
         self.expr = expr
-    
+        self.model_name = name
 
     def __and__(self, other: 'Condition'):
         return Condition(f"{self.expr} AND {other.expr}")
@@ -78,34 +78,38 @@ class Condition:
         return self.expr
 
 class Field:
-    def __init__(self, name, model=None):
+    def __init__(self, name, model:'BaseModel'=None):
         self.name = name
         self.model = model  # <-- NEW: who owns this field
 
+
+    """Do this kind of thing in every function in the Field class and remove the self.model.Tablename() so that we can avoid passing the self.model.TableName() class """
     def __eq__(self, value):
-        return Condition(f"{self.full_name()} = {repr(value)}")
+        if isinstance(value, Field):
+            return Condition(f"{self.full_name()} == {value.full_name()}",self.model.TableName())
+        return Condition(f"{self.full_name()} = {repr(value)}",self.model.TableName())
 
     def __ne__(self, value):
-        return Condition(f"{self.full_name()} != {repr(value)}")
+        return Condition(f"{self.full_name()} != {repr(value)}",self.model.TableName())
 
     def __gt__(self, value):
-        return Condition(f"{self.full_name()} > {repr(value)}")
+        return Condition(f"{self.full_name()} > {repr(value)}",self.model.TableName())
 
     def __lt__(self, value):
-        return Condition(f"{self.full_name()} < {repr(value)}")
+        return Condition(f"{self.full_name()} < {repr(value)}",self.model.TableName())
 
     def __ge__(self, value):
-        return Condition(f"{self.full_name()} >= {repr(value)}")
+        return Condition(f"{self.full_name()} >= {repr(value)}",self.model.TableName())
 
     def __le__(self, value):
-        return Condition(f"{self.full_name()} <= {repr(value)}")
+        return Condition(f"{self.full_name()} <= {repr(value)}",self.model.TableName())
 
     def in_(self, values):
         vals = ", ".join(repr(v) for v in values)
-        return Condition(f"{self.full_name()} IN ({vals})")
+        return Condition(f"{self.full_name()} IN ({vals})",self.model.TableName())
 
     def like(self, pattern):
-        return Condition(f"{self.full_name()} LIKE {repr(pattern)}")
+        return Condition(f"{self.full_name()} LIKE {repr(pattern)}",self.model.TableName())
 
     def full_name(self):
         if self.model:
@@ -284,12 +288,10 @@ class BaseModel(metaclass=ModelMeta):
         placeholders = ", ".join("?" for _ in names)
         sql = f"INSERT INTO {self.__class__.TableName()} ({', '.join(names)}) VALUES ({placeholders})"
 
-
         conn = self.__class__.connection()
         cur = conn.cursor()
         cur.execute(sql, values)
         conn.commit()
-
 
     @classmethod
     def query(self):
@@ -317,7 +319,7 @@ class BaseModel(metaclass=ModelMeta):
                 columns.append(f'{str(name)} {type_map[typ]}')
         
         sql = f"CREATE TABLE IF NOT EXISTS {cls.TableName()} ({(','.join(columns))})"        
-    
+
         conn = cls.connection()
         cur = conn.cursor()
         cur.execute(sql)
@@ -333,15 +335,26 @@ class QueryChainer:
         self._kwargs = {}
         self._selected_fields = []
         self._order_by = []
+        self._group_by = []
         self._limit = None
         self._count = False
-
+        self._query = ""
+        
 
     def order_by(self, *fields):
         self._order_by = fields
         return self
 
 
+    def group_by(self, *fields):
+        """
+        Accept Field objects like User.id, User.country
+        """
+        
+        self._group_by = fields
+        return self
+    
+    
     def count(self):
         self._count = True
         return self
@@ -358,13 +371,10 @@ class QueryChainer:
         return self
 
     def filter(self,*args, **kwargs):
-        
         for cond in args:
             if isinstance(cond, Condition):
                 self._conditions.append(cond)
-        
-
-        for k, v in self._kwargs:
+        for k, v in kwargs:
             self._kwargs[k] = v
 
         return self
@@ -382,15 +392,14 @@ class QueryChainer:
                     combined = cond & combined
 
             where_clause = str(combined)
-
-
-            for model in BaseModel.__subclasses__():
-                if model.TableName() in where_clause and model != self.model:
-                    joins.append(model)
+            # Only join foreign key models
+            for model_class, fk_field in self.model._foreign_keys.items():
+                if model_class.TableName() in where_clause:
+                    joins.append(model_class)
 
             clauses.append(where_clause)
 
-         # Process kwargs as normal
+        # Process kwargs as normal
         for k, v in self._kwargs.items():
             val = f"'{v}'" if isinstance(v, str) else v
             clauses.append(f"{self.model.TableName()}.{k} = {val}")
@@ -400,17 +409,36 @@ class QueryChainer:
 
 
     def all(self):
+        """ Bug Introduce in this function regarding models and output based on the things """
+        sql = self.toSql()
+        conn = self.model.connection()
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+        field_names = [f.name for f in self._selected_fields] if self._selected_fields else list(self.model.fields().keys())
+        return [self.model(**dict(zip(field_names, row))) for row in rows]
+
+    def toSql(self):
+        """ A small bug it will be optimized and fixed on more advanced querybuilder """
         if self._count:
-            field_list = "COUNT(*)"
+            if self._group_by:
+                group_fields = ', '.join([f.full_name() for f in self._group_by])
+                field_list = f"{group_fields}, COUNT(*)"
+            else:
+                field_list = "COUNT(*)"
+        
         elif self._selected_fields:
             field_name = []
             for f in self._selected_fields:
-                if f.model is not self.model:
+                bll = f.model in self.model._foreign_keys.keys()
+                if (f.model is not self.model) and (not bll):
                     raise ValueError("Invalid model in select class")
 
                 field_name.append(f.full_name())
             
             field_list = ', '.join(field_name)
+        
         else:
             field_list = f"{self.model.TableName()}.*"
         
@@ -424,6 +452,9 @@ class QueryChainer:
         if where_clause:
             sql += f" WHERE {where_clause}"
 
+        if self._group_by:
+            sql += f""
+
         if self._order_by:
             order_clause = ", ".join([f.full_name() for f in self._order_by])
             sql += f" ORDER BY {order_clause}"       
@@ -431,16 +462,9 @@ class QueryChainer:
         if self._limit is not None:
             sql += f" LIMIT {self._limit}"
 
+        return sql
 
-        print(sql)
-        conn = self.model.connection()
-        cur = conn.cursor()
-        cur.execute(sql)
-        rows = cur.fetchall()
-
-        field_names = [f.name for f in self._selected_fields] if self._selected_fields else list(self.model.fields().keys())
-        return [self.model(**dict(zip(field_names, row))) for row in rows]
-    
     def first(self):
         results = self.all()
         return results[0] if results else None
+    
