@@ -1,5 +1,11 @@
 from abc import ABC, abstractmethod
 import sqlite3
+import json
+from typing import TypeVar, Generic, List, Type, Optional
+
+
+T = TypeVar("T")
+M = TypeVar("M", bound="BaseModel")
 
 class NOTNULL:
     def __class_getitem__(cls, item):
@@ -61,9 +67,9 @@ class CHECK:
 
 
 class Condition:
-    def __init__(self, expr,name):
+    def __init__(self, expr):
         self.expr = expr
-        self.model_name = name
+        # self.model_name = name
 
     def __and__(self, other: 'Condition'):
         return Condition(f"{self.expr} AND {other.expr}")
@@ -86,30 +92,40 @@ class Field:
     """Do this kind of thing in every function in the Field class and remove the self.model.Tablename() so that we can avoid passing the self.model.TableName() class """
     def __eq__(self, value):
         if isinstance(value, Field):
-            return Condition(f"{self.full_name()} == {value.full_name()}",self.model.TableName())
-        return Condition(f"{self.full_name()} = {repr(value)}",self.model.TableName())
+            return Condition(f"{self.full_name()} == {value.full_name()}")
+        return Condition(f"{self.full_name()} = {repr(value)}")
 
     def __ne__(self, value):
-        return Condition(f"{self.full_name()} != {repr(value)}",self.model.TableName())
+        if isinstance(value, Field):
+            return Condition(f"{self.full_name()} == {value.full_name()}")
+        return Condition(f"{self.full_name()} != {repr(value)}")
 
     def __gt__(self, value):
-        return Condition(f"{self.full_name()} > {repr(value)}",self.model.TableName())
+        if isinstance(value, Field):
+            return Condition(f"{self.full_name()} == {value.full_name()}")
+        return Condition(f"{self.full_name()} > {repr(value)}")
 
     def __lt__(self, value):
-        return Condition(f"{self.full_name()} < {repr(value)}",self.model.TableName())
+        if isinstance(value, Field):
+            return Condition(f"{self.full_name()} == {value.full_name()}")
+        return Condition(f"{self.full_name()} < {repr(value)}")
 
     def __ge__(self, value):
-        return Condition(f"{self.full_name()} >= {repr(value)}",self.model.TableName())
+        if isinstance(value, Field):
+            return Condition(f"{self.full_name()} == {value.full_name()}")
+        return Condition(f"{self.full_name()} >= {repr(value)}")
 
     def __le__(self, value):
-        return Condition(f"{self.full_name()} <= {repr(value)}",self.model.TableName())
+        if isinstance(value, Field):
+            return Condition(f"{self.full_name()} == {value.full_name()}")
+        return Condition(f"{self.full_name()} <= {repr(value)}")
 
     def in_(self, values):
         vals = ", ".join(repr(v) for v in values)
-        return Condition(f"{self.full_name()} IN ({vals})",self.model.TableName())
+        return Condition(f"{self.full_name()} IN ({vals})")
 
     def like(self, pattern):
-        return Condition(f"{self.full_name()} LIKE {repr(pattern)}",self.model.TableName())
+        return Condition(f"{self.full_name()} LIKE {repr(pattern)}")
 
     def full_name(self):
         if self.model:
@@ -140,6 +156,12 @@ class ModelMeta(type):
 
         return cls
     
+
+class MetaConstruct:
+    def __init__(self, **kwargs):
+        for name in getattr(self.__class__,"__annotations__", {}):
+            setattr(self, name, kwargs.get(name))
+
 
 class BaseModel(metaclass=ModelMeta):
     DB_PATH = 'app.db'
@@ -293,8 +315,17 @@ class BaseModel(metaclass=ModelMeta):
         cur.execute(sql, values)
         conn.commit()
 
+        if pk:
+            try:
+                new_id = cur.lastrowid
+                setattr(self,pk,new_id)
+            except Exception:
+                pass
+        
+        # return self
+
     @classmethod
-    def query(self):
+    def query(self) -> "QueryChainer[M]":
         return QueryChainer(self)
 
     @classmethod
@@ -328,8 +359,8 @@ class BaseModel(metaclass=ModelMeta):
 
 
 # YET TO implement to complex set of queries in here 
-class QueryChainer:
-    def __init__(self, model: BaseModel):
+class QueryChainer(Generic[T]):
+    def __init__(self, model: Type[BaseModel]):
         self.model = model
         self._conditions = [] 
         self._kwargs = {}
@@ -339,7 +370,7 @@ class QueryChainer:
         self._limit = None
         self._count = False
         self._query = ""
-        
+        self._type_filler_model: Optional[Type[T]] = None            
 
     def order_by(self, *fields):
         self._order_by = fields
@@ -408,17 +439,26 @@ class QueryChainer:
         return final_where, joins
 
 
-    def all(self):
+    def fill_type(self,model) -> "QueryChainer[T]":
+        self._type_filler_model = model
+        return self
+
+    def all(self,json_enable=False) -> List[T]:
         """ Bug Introduce in this function regarding models and output based on the things """
         sql = self.toSql()
         conn = self.model.connection()
         cur = conn.cursor()
         cur.execute(sql)
         rows = cur.fetchall()
-
         field_names = [f.name for f in self._selected_fields] if self._selected_fields else list(self.model.fields().keys())
-        return [self.model(**dict(zip(field_names, row))) for row in rows]
-
+        
+        if json_enable:
+            return json.dumps([dict(zip(field_names, row)) for row in rows],indent=2)
+        elif self._type_filler_model:
+             return [self._type_filler_model(**dict(zip(field_names, row))) for row in rows]
+        else:
+            return [self.model(**dict(zip(field_names, row))) for row in rows]
+        
     def toSql(self):
         """ A small bug it will be optimized and fixed on more advanced querybuilder """
         if self._count:

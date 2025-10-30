@@ -1,84 +1,62 @@
-from pyormEngine.orm import BaseModel, PRIMARYKEY, FOREIGNKEY, QueryChainer
-
-class User(BaseModel):
-    id: PRIMARYKEY[int]
-    name: str
-    country: str
-
-    def __repr__(self):
-        return f"User(id={self.id}, name={self.name}, country={self.country})"
-
-
-class PlayList(BaseModel):
-    id: PRIMARYKEY[int]
-    name: str
-    user: FOREIGNKEY[User]
-
-    def __repr__(self):
-        return f"PlayList(id={self.id}, name={self.name}, user={self.user})"
-
-
-class Song(BaseModel):
-    id: PRIMARYKEY[int]
-    title: str
-    genre: str
-    duration: int  # in seconds
-    playlist: FOREIGNKEY[PlayList]
-
-    def __repr__(self):
-        return f"Song(id={self.id}, title={self.title}, genre={self.genre}, playlist={self.playlist})"
-
-
-
-
-
-from pyormEngine.orm import BaseModel, PRIMARYKEY, FOREIGNKEY
-
+from pyormEngine.orm import BaseModel, PRIMARYKEY, FOREIGNKEY,MetaConstruct
 
 # -------------------------------
 #  MODELS
 # -------------------------------
 
-class User(BaseModel):
+class Author(BaseModel):
     id: PRIMARYKEY[int]
     name: str
     country: str
 
     def __repr__(self):
-        return f"User(id={getattr(self, 'id', None)}, name={self.name}, country={self.country})"
+        return f"Author(id={getattr(self, 'id', None)}, name={self.name}, country={self.country})"
 
 
-class PlayList(BaseModel):
+class Publisher(BaseModel):
     id: PRIMARYKEY[int]
     name: str
-    user: FOREIGNKEY[User]
+    location: str
 
     def __repr__(self):
-        return f"PlayList(id={getattr(self, 'id', None)}, name={self.name}, user={self.user})"
+        return f"Publisher(id={getattr(self, 'id', None)}, name={self.name}, location={self.location})"
 
 
-class Song(BaseModel):
+class Book(BaseModel):
     id: PRIMARYKEY[int]
     title: str
     genre: str
-    duration: int
-    playlist: FOREIGNKEY[PlayList]
+    author: FOREIGNKEY[Author]
+    publisher: FOREIGNKEY[Publisher]
+    pages: int
 
     def __repr__(self):
-        return f"Song(id={getattr(self, 'id', None)}, title={self.title}, genre={self.genre}, playlist={self.playlist})"
+        return (
+            f"Book(id={getattr(self, 'id', None)}, "
+            f"title={self.title}, genre={self.genre}, "
+            f"author={self.author}, publisher={self.publisher}, "
+            f"pages={self.pages})"
+        )
 
 
 # -------------------------------
-#  DUMMY DATA CREATION
+#  DUMMY DATA CREATION (USING .id for FK)
 # -------------------------------
+
+class Ret(MetaConstruct):
+    id: int 
+    name: str
+
+    def __repr__(self):
+        return f"Ret {self.id} -- {self.name}"
+
 
 if __name__ == "__main__":
-    User.create_table()
-    PlayList.create_table()
+    Author.create_table()
+    Publisher.create_table()
+    Book.create_table()
 
-    query = (
-        PlayList.query()
-        .filter(User.id == PlayList.user)  
+    q = (
+        Book.query().select(Book.id,Publisher.name).filter((Publisher.id == 4) & (Author.id == 4)).fill_type(Ret)
     )
-
-    print(query.toSql())
+    
