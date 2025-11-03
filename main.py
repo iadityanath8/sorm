@@ -1,8 +1,4 @@
-from pyormEngine.orm import BaseModel, PRIMARYKEY, FOREIGNKEY,MetaConstruct
-
-# -------------------------------
-#  MODELS
-# -------------------------------
+from pyormEngine import FOREIGNKEY, BaseModel,PRIMARYKEY,MetaConstruct
 
 class Author(BaseModel):
     id: PRIMARYKEY[int]
@@ -57,6 +53,8 @@ if __name__ == "__main__":
     Book.create_table()
 
     q = (
-        Book.query().select(Book.id,Publisher.name).filter((Publisher.id == 4) & (Author.id == 4)).fill_type(Ret)
+        Book.query().select(Book.id,Publisher.name).filter((Book.id == 1) & (Publisher.name == "Meopw"))
     )
+
+    print(q.toSql())
     
