@@ -1,4 +1,4 @@
-# SORM
+# SORM - (Graphode)
 
 **SORM** — Simple ORM for Python  
 
